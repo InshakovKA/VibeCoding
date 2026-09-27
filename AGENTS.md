@@ -215,6 +215,39 @@ and re-splits nothing. Outputs `churn_model.pkl` (git-ignored) and `model_report
   inference time makes sklearn warn "X has feature names, but ... was fitted without
   feature names". Benign, but confusing; pass a numpy array.
 
+## Tests
+
+```powershell
+& .venv\Scripts\python.exe -m unittest discover
+```
+
+73 tests, ~12 s, **stdlib `unittest` on purpose** — pytest is not installed, and
+`requirements.txt` stays pinned to the verified runtime rather than growing a test
+dependency. `tests/__init__.py` puts the repo root on `sys.path`, so discovery works
+however it is invoked.
+
+- `test_threshold.py` — `best_f1_threshold` against brute force. The invariant is
+  behavioural: *applying* the returned threshold must reproduce the brute-force optimum
+  F1. Comparing threshold values across implementations is fragile, since the optimum is
+  a range.
+- `test_config.py` — parsing, the `"none"` sentinel, and every rejection path.
+- `test_seeding.py` — the estimator is seeded, not just the search. Cheap by design
+  (small models, small slices); the claim "the full run is bit-identical" is verified by
+  hand, not here.
+- `test_report.py` — ASCII-only, no `nan` in a table, feature order printed, both
+  branch-gated caveats.
+- `test_pipeline.py` — `main()` end to end in <4 s on **generated** data, asserting both
+  artifacts and that the pickle reloads. Generated rather than read from
+  `data/processed_*.csv` because those are git-ignored, so a fresh clone has no stage-1
+  output and the suite must still run.
+- `test_data_contract.py` — asserts the real stage-1 invariants (12000/3000 rows, shared
+  column order, dense, `churn` last, 1-5 `satisfaction_score`, ~32% positive). **Skips**
+  when the CSVs are absent, so a fresh clone reports `OK (skipped=10)` rather than
+  failing. Run `DataProcessing.py` first to exercise these.
+
+No test may take minutes. If something needs the full pipeline exercised, subsample and
+shrink the grid — the 21-minute run is a deliverable, not a test.
+
 ## Modeling traps (verified in the data)
 
 - **Temporal drift.** Churn rate is ~0.226 (2022 signups) and ~0.229 (2023) but **0.497
