@@ -12,6 +12,9 @@ Find the most accurate solution to the churn-prediction task defined by
    saved with `pickle` **and** a markdown report describing the selected model and its
    test-set results.
 
+Both modules are written. Current best result: `HistGradientBoostingClassifier`, test
+**AUC 0.97690**. The candidate list for stage 2 lives in `model_tuning.toml`.
+
 ## Environment
 
 `python` on `PATH` is the Windows Store alias stub and **fails silently** — it prints
@@ -140,14 +143,90 @@ Do **not** re-read the raw CSV, re-impute, re-encode, or re-select features in
 - `ModelTuning.py` needs no scaler of its own — the CSVs are already on their final
   scales. Trees ignore scale; KNN/SVM/linear models depend on it being consistent.
 
+## Stage 2 (`ModelTuning.py`)
+
+Runs after stage 1 and consumes **only** the two processed CSVs. It re-derives nothing
+and re-splits nothing. Outputs `churn_model.pkl` (git-ignored) and `model_report.md`
+(tracked, it is a deliverable).
+
+- **The candidate list is config-driven**, not hard-coded. `model_tuning.toml` holds one
+  `[[models]]` table per candidate with a `class_path` and a `params` grid;
+  `ModelTuning.py` imports the class by path. Adding LightGBM/XGBoost is a config edit
+  — `lightgbm.LGBMClassifier` and `xgboost.XGBClassifier` are both installed and
+  importable that way.
+- **TOML, not JSON/YAML.** Python 3.11 ships `tomllib` in the stdlib, so the config is
+  commented and dependency-free. PyYAML is *not* installed. TOML has no `null`, so
+  "no value" is spelled `"none"` and resolved to Python `None` by `coerce_params`; the
+  match is exact so `gamma = "scale"` is untouched.
+- `search = "grid"` for a small space (`GridSearchCV`), `search = "random"` for a large
+  one (`RandomizedSearchCV`, 48 draws). The module prints a note when `random_iterations`
+  exceeds the grid size, so a silent under-sample can't happen.
+- **Selection is by 5-fold CV `roc_auc` on train only.** The test split is scored exactly
+  once, by the winner. Threshold-free metric because the data is 68/32 — accuracy would
+  reward always predicting the majority class.
+- **Result (deterministic, measured):** Gradient Boosting
+  (`HistGradientBoostingClassifier`) wins at CV **0.97620**, test **AUC 0.97690** /
+  AP 0.96463 / accuracy 0.9353. Random Forest 0.97519, SVC 0.97195. Beating the
+  ~0.975 stage-1 floor is the bar; 0.9769 clears it only just, and Random Forest is
+  within 1/3 of a standard deviation of the winner (`std` is ~0.003 per config).
+- **Full-run cost is ~21 min** on 8 cores: SVC 450 fits, RF 240 fits, GB 240 fits.
+
+### Stage-2 traps (each one hit and fixed during implementation)
+
+- **Validate `class_path` and param names at config-load time, not at search time.**
+  Importing lazily meant a typo'd class name only surfaced *after* the previous
+  candidate had finished tuning — minutes into a 21-minute run. `load_config` now
+  resolves every `class_path` and rejects parameter names the estimator does not
+  accept, which is also the guard that catches a stale-version param name.
+- **`params = {}` is present-but-empty**, so a "is `params` a required key" check does
+  not catch it. It would otherwise become a legitimate-looking 1-point search that
+  competes in the leaderboard on plain defaults. `coerce_params` rejects it explicitly.
+- **`roc_curve`'s `precision`/`recall` are NOT index-aligned with `thresholds`.** At its
+  lowest threshold it reports precision 1.0 where the base rate is ~0.55, so an argmax
+  over F1 computed from it selects the degenerate *predict-everything-positive* solution.
+  It produced a threshold of 0.0015 and a test accuracy of 0.319. Use
+  `precision_recall_curve` instead — its contract *is* documented (`precision[i]` pairs
+  with `thresholds[i]`), and dropping the last element excludes the all-positive point.
+  Do not "fix" this by sorting thresholds or by midpoint interpolation: ties make that
+  wrong, and it was wrong on the second attempt too.
+- **Seed the estimator, not just the search.** `RandomizedSearchCV(random_state=...)` does
+  not make the *estimator* it refits deterministic. `HistGradientBoostingClassifier` with
+  `early_stopping='auto'` splits off a validation set from the **global** RNG when
+  `random_state` is None (measured: `n_iter_` of 185/190/182 across three runs), and
+  `RandomForestClassifier` samples bootstraps the same way. This moved the winning CV
+  score between runs (0.97616 -> 0.97622). `seed_estimator()` injects `random_state` into
+  any candidate that accepts one; verified bit-identical afterwards.
+- **`HistGradientBoostingClassifier.max_features` exists in sklearn 1.9 but not 1.3.**
+  An old signature dump from the Anaconda sklearn would have produced a `ValueError` at
+  fit time. Re-verify parameter names against *this* venv before trusting any grid.
+- **`SVC` runs without `probability=True`** (deprecated in 1.9, removed in 1.11) and is
+  scored via `decision_function`. `roc_auc` only needs a ranking, so this is free. If a
+  candidate without `predict_proba` ever *wins*, the report says so and the model is
+  uncalibrated — wrap it in `CalibratedClassifierCV`.
+- **Permutation importance must be measured on data the model was not fitted on.** The
+  search refits the winner on *all* of train, so permuting `x_train` is an in-sample
+  measurement and distorts the ranking. The module carves a stratified 25% holdout out
+  of train, refits a probe on the other 75%, and permutes that. Do not "simplify" this
+  to `permutation_importance(winner, x_train, y_train)` — that was the first version and
+  it was quietly wrong.
+- **The pickle stores the estimator only** — no feature list, no config. The report
+  therefore prints the positional column order, because column order is part of the
+  model's contract. The estimator is fitted on a numpy array, so passing a DataFrame at
+  inference time makes sklearn warn "X has feature names, but ... was fitted without
+  feature names". Benign, but confusing; pass a numpy array.
+
 ## Modeling traps (verified in the data)
 
 - **Temporal drift.** Churn rate is ~0.226 (2022 signups) and ~0.229 (2023) but **0.497
   for 2024**. A random split mixes three eras with very different base rates, so any
   date-derived feature silently encodes the era and inflates in-distribution scores.
-  Decide the split strategy (random+stratified per the spec vs. temporal holdout) and
-  state it in the report — the two answer different questions and give different
-  numbers. Do not present an inflated random-split score as temporal generalization.
+  **Decision (2026-09-27, confirmed): keep the random stratified split** — it is what the
+  task specifies, and it is the right choice for "how well does this model classify a
+  mixed population of existing customers". The consequence is accepted and stated in the
+  report: **the reported test AUC is in-distribution, not temporal generalization.** The
+  two answer different questions, so do not quote 0.9769 as a forecast for future cohorts.
+  A temporal holdout would need a different split in `DataProcessing.py` (train on
+  2022-2023, test on 2024) and would be a *change of task*, not a better run of this one.
 - **Redundant features.** `tenure_months` is ≈0.994 correlated with months elapsed since
   `signup_date`; `total_charges` is ≈0.954 correlated with
   `monthly_charges * tenure_months`. These are near-duplicates, not independent signal.
@@ -166,6 +245,11 @@ Do **not** re-read the raw CSV, re-impute, re-encode, or re-select features in
     HGB 0.97407, LogReg 0.96945.
   Treat ~0.975 as the floor; a stage 2 that cannot beat it is a regression. The figure
   moves by ~0.001 across scikit-learn versions, so compare like-for-like inside `.venv`.
+  **Stage 2 clears the floor, but only just:** tuned HGB reaches test AUC 0.97690
+  (+0.0012 over the untuned default) and tuned RF 0.97519 CV — both inside the
+  ~0.003 per-config standard deviation, so the *ranking* of the three candidates is
+  firm but none of them is meaningfully better than an untuned HGB. Do not oversell
+  the tuning win.
 - **Scaler choice is provably a no-op for this pipeline.** Measured 5-fold CV AUC under
   Standard / MinMax / MaxAbs: HGB 0.97496 in all three (trees are scale-invariant),
   LogReg 0.96923 / 0.96932 / 0.96928 (noise). Correlation-based selection is also

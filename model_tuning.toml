@@ -1,0 +1,77 @@
+# ModelTuning.py configuration
+#
+# The [[models]] array below *is* the model-selection list. ModelTuning.py imports
+# each entry's `class_path` and searches its `params`, so adding a candidate is a
+# config edit -- no code change required. Any estimator importable by path works,
+# e.g. "lightgbm.LGBMClassifier" or "xgboost.XGBClassifier".
+#
+# TOML because python 3.11 ships `tomllib` in the stdlib: comments, no new
+# dependency, and a parse error is loud rather than silent.
+
+[cv]
+n_splits = 5
+shuffle = true
+random_state = 42
+# Primary selection metric. Threshold-free, so it is valid under the 68/32 class
+# imbalance; accuracy-family metrics are reported but never used to pick a winner.
+scoring = "roc_auc"
+# -1 uses every logical core. Set to 1 to make timings directly comparable.
+n_jobs = -1
+
+[search]
+# Iteration count for entries with search = "random". Keep this at or below the
+# product of each entry's parameter-list lengths.
+random_iterations = 48
+random_state = 42
+
+[report]
+# Accuracy/precision/recall/F1 all depend on a decision threshold. 0.5 is the
+# conventional default; the report also gives a threshold chosen on TRAIN data
+# (never on test) because 0.5 is rarely optimal for a 68/32 split.
+decision_threshold = 0.5
+# Rows in the per-model top-hyperparameter table.
+top_k = 12
+# Permutation-importance rows on the winning model (computed on train).
+importance_rows = 10
+output_dir = "."
+model_filename = "churn_model.pkl"
+report_filename = "model_report.md"
+
+
+# --------------------------------------------------------------------------- #
+# Model selection candidates
+# --------------------------------------------------------------------------- #
+
+[[models]]
+name = "Support Vector Machine (RBF)"
+class_path = "sklearn.svm.SVC"
+search = "grid"
+notes = """
+Scored via decision_function rather than predict_proba. probability=True is
+deprecated in scikit-learn 1.9 (removed in 1.11) and costs an extra internal
+5-fold Platt-scaling pass; ROC AUC only needs a ranking, so probabilities are
+never computed and the model ships uncalibrated.
+"""
+# "none" is a sentinel for Python's None -- TOML has no null literal. It is
+# matched exactly, so gamma = "scale" is left alone.
+params = { kernel = ["rbf"], C = [1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 64.0, 128.0, 256.0], gamma = ["scale", 0.001, 0.01, 0.1, 1.0], class_weight = ["none", "balanced"] }
+
+[[models]]
+name = "Random Forest"
+class_path = "sklearn.ensemble.RandomForestClassifier"
+search = "random"
+notes = "bootstrap defaults to true; criterion and max_features are both searched."
+params = { n_estimators = [300, 500, 800, 1200], criterion = ["gini", "entropy"], max_depth = ["none", 6, 10, 14, 20], min_samples_leaf = [1, 2, 4, 8, 16], max_features = ["sqrt", 0.3, 0.5, 0.8], class_weight = ["none", "balanced", "balanced_subsample"] }
+
+[[models]]
+name = "Gradient Boosting"
+class_path = "sklearn.ensemble.HistGradientBoostingClassifier"
+search = "random"
+notes = """
+Histogram-based gradient boosting, the strongest single model measured on this
+data (5-fold CV AUC 0.97496 on the raw block, 0.97407 on the stage-1 CSVs) and
+by far the cheapest to fit here (~0.2s). Swap class_path to
+sklearn.ensemble.GradientBoostingClassifier for the exact-gradient-boosting
+variant -- it is ~7x slower and scored no better.
+"""
+params = { learning_rate = [0.01, 0.03, 0.05, 0.08, 0.1], max_iter = [200, 400, 700], max_leaf_nodes = [15, 31, 63, 127], min_samples_leaf = [10, 20, 40, 80], l2_regularization = [0.0, 0.1, 0.5, 1.0, 5.0], max_features = [0.6, 0.8, 1.0], class_weight = ["none", "balanced"] }
