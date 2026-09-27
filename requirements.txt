@@ -1,0 +1,29 @@
+# Direct dependencies, pinned to what is verified working in .venv (Python 3.11).
+# Create the venv from a standalone, non-conda 3.11 -- do not use a bare `python`,
+# which may be the Windows Store alias stub that fails silently. Then:
+#   py -3.11 -m venv .venv
+#   .venv\Scripts\python.exe -m pip install -r requirements.txt
+#
+# Transitive dependencies (numpy-linked build deps, pillow, python-dateutil,
+# threadpoolctl, sklearn-compat, ...) are resolved by pip and intentionally
+# not pinned here.
+
+# data loading, imputation, transformation
+pandas==3.0.6
+numpy==2.4.6
+
+# model selection, cross-validation, preprocessing, metrics
+scikit-learn==1.9.1
+scipy==1.17.1
+joblib==1.6.0
+
+# gradient boosting candidate models
+lightgbm==4.7.0
+xgboost==3.2.0
+
+# class-imbalance handling (train is 68/32)
+imbalanced-learn==0.14.2
+
+# diagnostic plots for the report
+matplotlib==3.11.2
+seaborn==0.13.2
