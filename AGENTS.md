@@ -94,8 +94,12 @@ imbalanced, no target missing values).
   exactly once for the final report. Nested CV or a train-internal validation split is
   needed to keep that number honest.
 - Default filenames: `data/processed_train.csv`, `data/processed_test.csv`, the pickled
-  model, and the markdown report. `.gitignore` already covers `.venv/`, those two CSVs,
-  and `*.pkl` / `*.joblib` — add to it rather than committing artifacts.
+  model, and the markdown report.
+- **The two processed CSVs and `churn_model.pkl` are committed, not ignored.** They are
+  the deliverables; a reviewer needs them to check the reported test score without
+  re-running the 21-minute stage 2. `.gitignore` still covers `.venv/`, `__pycache__/`,
+  and `*.joblib`. Verified before committing: the pickle reloads and reproduces the
+  report's AUC exactly (0.97690), and its `n_features_in_` (16) matches the CSVs.
 
 ## Stage 1 output schema (`DataProcessing.py`, already written)
 
@@ -146,8 +150,8 @@ Do **not** re-read the raw CSV, re-impute, re-encode, or re-select features in
 ## Stage 2 (`ModelTuning.py`)
 
 Runs after stage 1 and consumes **only** the two processed CSVs. It re-derives nothing
-and re-splits nothing. Outputs `churn_model.pkl` (git-ignored) and `model_report.md`
-(tracked, it is a deliverable).
+and re-splits nothing. Outputs `churn_model.pkl` and `model_report.md`; both are
+committed, since both are deliverables.
 
 - **The candidate list is config-driven**, not hard-coded. `model_tuning.toml` holds one
   `[[models]]` table per candidate with a `class_path` and a `params` grid;
@@ -238,12 +242,12 @@ however it is invoked.
   branch-gated caveats.
 - `test_pipeline.py` — `main()` end to end in <4 s on **generated** data, asserting both
   artifacts and that the pickle reloads. Generated rather than read from
-  `data/processed_*.csv` because those are git-ignored, so a fresh clone has no stage-1
-  output and the suite must still run.
+  `data/processed_*.csv` because that keeps the test independent of the committed
+  artifacts, and so a checkout with stage 1 not yet run still works.
 - `test_data_contract.py` — asserts the real stage-1 invariants (12000/3000 rows, shared
-  column order, dense, `churn` last, 1-5 `satisfaction_score`, ~32% positive). **Skips**
-  when the CSVs are absent, so a fresh clone reports `OK (skipped=10)` rather than
-  failing. Run `DataProcessing.py` first to exercise these.
+  column order, dense, `churn` last, 1-5 `satisfaction_score`, ~32% positive). The CSVs
+  are committed, so this runs in a normal checkout; it **skips** if they are missing, so
+  a tree where stage 1 has not been run reports `OK (skipped=10)` rather than failing.
 
 No test may take minutes. If something needs the full pipeline exercised, subsample and
 shrink the grid — the 21-minute run is a deliverable, not a test.
